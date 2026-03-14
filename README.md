@@ -103,6 +103,9 @@ Backup location: `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\cli.js.ba
 | npm global install | ✅ |
 | NVM for Windows | ✅ |
 | Claude Code v2.x | ✅ |
+| **Native binary (WinGet)** | ❌ **Not supported** |
+
+> **Note:** The native binary installed via `winget install Anthropic.ClaudeCode` is a compiled `.exe` with no `cli.js` to patch. If you use the native version and need Vietnamese input, switch to the npm install: `winget uninstall Anthropic.ClaudeCode && npm i -g @anthropic-ai/claude-code`.
 
 ## Debug
 
