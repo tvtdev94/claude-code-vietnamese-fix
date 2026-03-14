@@ -1,6 +1,6 @@
 {
   "name": "claude-code-vietnamese-fix",
-  "version": "4.0.0",
+  "version": "1.0.0",
   "description": "Fix Vietnamese IME input (Unikey/Telex) for Claude Code CLI on Windows",
   "bin": {
     "claude-code-vietnamese-fix": "patch-vietnamese-ime.js"
