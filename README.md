@@ -16,8 +16,25 @@ Unikey sends backspace (`\x08`) + replacement chars embedded in the input string
 
 ## Quick Start
 
+### Option 1: npx (no install needed)
+
 ```bash
 npx claude-code-vietnamese-fix
+```
+
+### Option 2: Install globally
+
+```bash
+npm install -g claude-code-vietnamese-fix
+claude-code-vietnamese-fix
+```
+
+### Option 3: Clone and run
+
+```bash
+git clone https://github.com/tvtdev94/claude-code-vietnamese-fix.git
+cd claude-code-vietnamese-fix
+node patch-vietnamese-ime.js
 ```
 
 Then **restart Claude Code**.
