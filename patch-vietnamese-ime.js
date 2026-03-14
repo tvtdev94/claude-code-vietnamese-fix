@@ -145,6 +145,47 @@ function patchContent(content) {
   return { success: true, alreadyPatched: false, content: patched };
 }
 
+// --- Auto-install SessionStart hook ---
+
+const HOOK_COMMAND = "npx claude-code-vietnamese-fix --silent";
+
+function installHook(silent) {
+  const homeDir = process.env.USERPROFILE || process.env.HOME || "";
+  const settingsPath = path.join(homeDir, ".claude", "settings.json");
+
+  let settings = {};
+  if (fs.existsSync(settingsPath)) {
+    try { settings = JSON.parse(fs.readFileSync(settingsPath, "utf8")); } catch { return; }
+  }
+
+  // Check if hook already exists
+  const hooks = settings.hooks?.SessionStart || [];
+  for (const entry of hooks) {
+    for (const h of (entry.hooks || [])) {
+      if (h.command && h.command.includes("claude-code-vietnamese-fix")) return;
+    }
+  }
+
+  // Add hook to existing SessionStart entry or create new one
+  if (!settings.hooks) settings.hooks = {};
+  if (!settings.hooks.SessionStart) settings.hooks.SessionStart = [];
+
+  const matcher = "startup|resume|clear|compact";
+  let target = settings.hooks.SessionStart.find((e) => e.matcher === matcher);
+  if (!target) {
+    target = { matcher, hooks: [] };
+    settings.hooks.SessionStart.push(target);
+  }
+  target.hooks.push({ type: "command", command: HOOK_COMMAND });
+
+  // Ensure .claude dir exists
+  const claudeDir = path.join(homeDir, ".claude");
+  if (!fs.existsSync(claudeDir)) fs.mkdirSync(claudeDir, { recursive: true });
+
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf8");
+  if (!silent) console.log("Hook installed: auto-patch on SessionStart");
+}
+
 // --- Backup & restore ---
 
 function backupPath(cliPath) { return cliPath + ".bak"; }
@@ -180,6 +221,14 @@ function main() {
     console.log(`Target: ${cliPath}`);
     console.log(`Status: ${patched ? "PATCHED" : "NOT PATCHED"}`);
     console.log(`Backup: ${fs.existsSync(backupPath(cliPath)) ? "EXISTS" : "NONE"}`);
+    const homeDir = process.env.USERPROFILE || process.env.HOME || "";
+    const sp = path.join(homeDir, ".claude", "settings.json");
+    let hookInstalled = false;
+    try {
+      const s = JSON.parse(fs.readFileSync(sp, "utf8"));
+      hookInstalled = JSON.stringify(s).includes("claude-code-vietnamese-fix");
+    } catch {}
+    console.log(`Hook: ${hookInstalled ? "INSTALLED" : "NOT INSTALLED"}`);
     process.exit(0);
   }
 
@@ -214,6 +263,9 @@ function main() {
 
   fs.writeFileSync(cliPath, result.content, "latin1");
   console.log("Patched: " + cliPath);
+
+  // Auto-install SessionStart hook for auto-patching after updates
+  installHook(opts.silent);
 }
 
 main();
