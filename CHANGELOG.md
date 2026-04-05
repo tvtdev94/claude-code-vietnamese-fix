@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.0.1] - 2026-04-05
+
+### Fixed
+- Show friendly error message when Claude Code is running (EBUSY) instead of raw stack trace
+
 ## [2.0.0] - 2026-04-05
 
 ### Added

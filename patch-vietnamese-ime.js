@@ -326,10 +326,29 @@ function main() {
   // Restore from backup first if exists (ensure clean base for re-patching)
   // Skip restore for --dry-run and --output to avoid touching the live file
   if (!opts.dryRun && !opts.output && fs.existsSync(backupPath(targetPath))) {
-    fs.copyFileSync(backupPath(targetPath), targetPath);
+    try {
+      fs.copyFileSync(backupPath(targetPath), targetPath);
+    } catch (e) {
+      if (e.code === "EBUSY") {
+        console.error("Error: Claude Code is currently running.");
+        console.error("Please close all Claude Code windows and try again.");
+        process.exit(1);
+      }
+      throw e;
+    }
   }
 
-  const content = fs.readFileSync(targetPath, "latin1");
+  let content;
+  try {
+    content = fs.readFileSync(targetPath, "latin1");
+  } catch (e) {
+    if (e.code === "EBUSY") {
+      console.error("Error: Claude Code is currently running.");
+      console.error("Please close all Claude Code windows and try again.");
+      process.exit(1);
+    }
+    throw e;
+  }
   const isJs = targetPath.endsWith(".js");
   const result = isJs ? patchContentJs(content) : patchContentBinary(content);
 
@@ -356,7 +375,16 @@ function main() {
     if (!opts.silent) console.log("Backup: " + backupPath(targetPath));
   }
 
-  fs.writeFileSync(finalPath, result.content, "latin1");
+  try {
+    fs.writeFileSync(finalPath, result.content, "latin1");
+  } catch (e) {
+    if (e.code === "EBUSY") {
+      console.error("Error: Claude Code is currently running.");
+      console.error("Please close all Claude Code windows and try again.");
+      process.exit(1);
+    }
+    throw e;
+  }
   console.log("Patched: " + finalPath);
 
   // Re-sign binary on macOS (required to pass Gatekeeper)
