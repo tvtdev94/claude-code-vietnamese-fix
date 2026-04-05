@@ -26,7 +26,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tvtdev94/claude-code-vietnamese-fix"
+    "url": "git+https://github.com/tvtdev94/claude-code-vietnamese-fix.git"
   },
   "engines": {
     "node": ">=16"
