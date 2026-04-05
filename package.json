@@ -1,7 +1,7 @@
 {
   "name": "claude-code-vietnamese-fix",
-  "version": "1.1.0",
-  "description": "Fix Vietnamese IME input (Unikey/Telex) for Claude Code CLI on Windows",
+  "version": "2.0.0",
+  "description": "Fix Vietnamese IME input (Unikey/Telex) for Claude Code CLI — supports npm and native binary",
   "bin": {
     "claude-code-vietnamese-fix": "patch-vietnamese-ime.js"
   },
@@ -9,9 +9,10 @@
     "patch": "node patch-vietnamese-ime.js",
     "patch:silent": "node patch-vietnamese-ime.js --silent",
     "status": "node patch-vietnamese-ime.js --status",
-    "restore": "node patch-vietnamese-ime.js --restore"
+    "restore": "node patch-vietnamese-ime.js --restore",
+    "test": "vitest run"
   },
-  "keywords": ["claude-code", "vietnamese", "ime", "unikey", "telex", "windows", "patch"],
+  "keywords": ["claude-code", "vietnamese", "ime", "unikey", "telex", "windows", "patch", "binary"],
   "author": "tvtdev94",
   "license": "MIT",
   "repository": {
@@ -20,5 +21,11 @@
   },
   "engines": {
     "node": ">=16"
+  },
+  "files": [
+    "patch-vietnamese-ime.js"
+  ],
+  "devDependencies": {
+    "vitest": "^4.0.17"
   }
 }

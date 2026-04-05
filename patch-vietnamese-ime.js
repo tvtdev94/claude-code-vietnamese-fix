@@ -1,49 +1,78 @@
 #!/usr/bin/env node
 
 /**
- * Patch Claude Code CLI to fix Vietnamese IME input (Unikey/Telex) on Windows.
+ * Patch Claude Code CLI to fix Vietnamese IME input on Windows/macOS/Linux.
+ * Supports both npm-installed (cli.js) and native binary versions.
  *
- * Root cause: Unikey sends backspace chars (\x08) embedded in the input string
- * along with replacement chars. Claude Code's input handler doesn't process
- * these embedded BS chars — it inserts the entire string as-is, causing
- * duplicate/garbled characters.
+ * Root cause: Vietnamese IME (Unikey, OpenKey, EVKey) embeds \x7f (DEL) chars
+ * in input strings. Claude Code's input handler inserts the entire string as-is,
+ * causing duplicate/garbled characters.
  *
- * Fix: Wrap the input handler to detect embedded \x08 (BS) in the input
- * string. When found, process each char sequentially: regular chars get
- * inserted, \x08 triggers a cursor.backspace(). The result is applied
- * atomically to avoid stale-state issues.
+ * Fix: Intercept the existing \x7f detection point in Claude Code's input handler.
+ * Strip \x7f chars, insert remaining chars char-by-char into cursor state, then
+ * apply the final state atomically.
  *
  * Usage:
- *   node patch-vietnamese-ime.js            # patch (auto-find cli.js)
+ *   node patch-vietnamese-ime.js            # patch (auto-find cli.js or binary)
  *   node patch-vietnamese-ime.js --silent   # patch, no output if already patched
  *   node patch-vietnamese-ime.js --restore  # restore from backup
  *   node patch-vietnamese-ime.js --status   # check patch status
- *   node patch-vietnamese-ime.js -f <path>  # specify cli.js path manually
+ *   node patch-vietnamese-ime.js --dry-run  # test patch without saving
+ *   node patch-vietnamese-ime.js -f <path>  # specify target file manually
+ *   node patch-vietnamese-ime.js -o <path>  # write patched output to new file
  */
 
 const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
+const os = require("os");
 
-const PATCH_MARKER = "/* _vietnamese_ime_fix_v4_ */";
+const PATCH_MARKER = "/* _vn_ime_fix_ */";
 
 // --- CLI argument parsing ---
 
 function parseArgs() {
   const args = process.argv.slice(2);
-  const opts = { silent: false, restore: false, status: false, file: null };
+  const opts = {
+    silent: false,
+    restore: false,
+    status: false,
+    dryRun: false,
+    file: null,
+    output: null,
+  };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--silent") opts.silent = true;
     else if (args[i] === "--restore") opts.restore = true;
     else if (args[i] === "--status") opts.status = true;
+    else if (args[i] === "--dry-run" || args[i] === "-d") opts.dryRun = true;
     else if (args[i] === "-f" || args[i] === "--file") opts.file = args[++i];
+    else if (args[i] === "-o" || args[i] === "--output") opts.output = args[++i];
+    else if (args[i] === "-h" || args[i] === "--help") {
+      console.log(`
+Usage:
+  claude-code-vietnamese-fix [options]
+
+Options:
+  -f, --file <path>   Path to cli.js or claude binary
+  -d, --dry-run       Test without overwriting the file
+  -o, --output <path> Write patched content to a new file
+  --silent            No output if already patched
+  --restore           Restore original from backup
+  --status            Show patch/backup/hook status
+  -h, --help          Show this help message
+`);
+      process.exit(0);
+    }
   }
   return opts;
 }
 
-// --- Locate cli.js on Windows ---
+// --- Locate cli.js or binary ---
 
-function findCliJs() {
+function findClaudePath() {
+  const isWin = os.platform() === "win32";
+
   const run = (cmd) => {
     try {
       return execSync(cmd, { stdio: ["ignore", "pipe", "ignore"] })
@@ -52,97 +81,153 @@ function findCliJs() {
   };
   const exists = (p) => p && fs.existsSync(p);
 
-  // npm global
+  // 1) which / where
+  for (const cmd of [isWin ? "where claude" : "which claude"]) {
+    const p = run(cmd);
+    if (exists(p)) {
+      if (!isWin) {
+        try { return execSync(`realpath "${p}"`).toString().trim(); } catch {}
+      }
+      return p;
+    }
+  }
+
+  // 2) Bun global paths
+  const bunInstall =
+    process.env.BUN_INSTALL ||
+    (isWin
+      ? path.join(process.env.USERPROFILE || "", ".bun")
+      : path.join(process.env.HOME || "", ".bun"));
+
+  const bunPaths = [
+    path.join(bunInstall, "bin", isWin ? "claude.exe" : "claude"),
+    path.join(bunInstall, "bin", isWin ? "claude.cmd" : "claude"),
+    path.join(bunInstall, "install", "global", "node_modules", "@anthropic-ai", "claude-code", "cli.js"),
+  ];
+  for (const p of bunPaths) {
+    if (exists(p)) return p;
+  }
+
+  // 3) npm global
   try {
     const npmRoot = run("npm root -g");
     const p = path.join(npmRoot, "@anthropic-ai", "claude-code", "cli.js");
     if (exists(p)) return p;
   } catch {}
 
-  // Common Windows paths
-  const paths = [
-    path.join(process.env.APPDATA || "", "npm", "node_modules", "@anthropic-ai", "claude-code", "cli.js"),
-    path.join(process.env.LOCALAPPDATA || "", "npm", "node_modules", "@anthropic-ai", "claude-code", "cli.js"),
-  ];
-  if (process.env.NVM_HOME) {
-    try {
-      for (const dir of fs.readdirSync(process.env.NVM_HOME)) {
-        paths.push(path.join(process.env.NVM_HOME, dir, "node_modules", "@anthropic-ai", "claude-code", "cli.js"));
-      }
-    } catch {}
+  // 4) Windows fallbacks
+  if (isWin) {
+    const paths = [
+      path.join(process.env.APPDATA || "", "npm", "node_modules", "@anthropic-ai", "claude-code", "cli.js"),
+      path.join(process.env.LOCALAPPDATA || "", "npm", "node_modules", "@anthropic-ai", "claude-code", "cli.js"),
+    ];
+    if (process.env.NVM_HOME) {
+      try {
+        for (const dir of fs.readdirSync(process.env.NVM_HOME)) {
+          paths.push(path.join(process.env.NVM_HOME, dir, "node_modules", "@anthropic-ai", "claude-code", "cli.js"));
+        }
+      } catch {}
+    }
+    for (const p of paths) { if (exists(p)) return p; }
   }
-  for (const p of paths) { if (exists(p)) return p; }
+
   return null;
 }
 
-// --- Patch logic ---
+// --- Patch logic for cli.js (npm install) ---
 
-function patchContent(content) {
-  if (content.includes(PATCH_MARKER)) {
+// Pattern matching the \x7f detection + cursor state application in Claude Code:
+//   l.match(/\x7f/g)...if(!S.equals(CA)){if(S.text!==CA.text)Q(CA.text);T(CA.offset)}ct1(),lt1();return
+const PATCH_RE = /(?<m0>(?<var0>[\w$]+)\.match\(\/\\x7f\/g\).*?)(?<m1>if\(!(?<var1>[\w$]+)\.equals\((?<var2>[\w$]+)\)\){if\(\k<var1>\.text!==\k<var2>\.text\)(?<func1>[\w$]+)\(\k<var2>\.text\);(?<func2>[\w$]+)\(\k<var2>\.offset\)})(?<m2>(?:[\w$]+\(\),?\s*)*;?\s*return)/g;
+
+function buildPatch(m0, m1, var0, var2, m2) {
+  return `
+${PATCH_MARKER}
+${m0}
+let _vn = ${var0}.replace(/\\x7f/g, "");
+if (_vn.length > 0) {
+    for (const _c of _vn) ${var2} = ${var2}.insert(_c);
+    ${m1}
+}
+${m2}
+`;
+}
+
+function patchContentJs(fileContent) {
+  if (fileContent.includes(PATCH_MARKER)) {
     return { success: true, alreadyPatched: true };
   }
 
-  let patched = content;
+  const newContent = fileContent.replace(PATCH_RE, (...args) => {
+    const { m0, m1, var0, var2, m2 } = args[args.length - 1];
+    return buildPatch(m0, m1, var0, var2, m2);
+  });
 
-  // Find the input handler function:
-  //   function n(t,r){let l=G?G(t,r):t;if(l===""&&t!=="")return;...}
-  // This is the onInput handler for Claude Code's text input component.
-  const outerRe = /function\s+([\w$]+)\(([\w$]+),([\w$]+)\)\{let\s+([\w$]+)=([\w$]+)\?\5\(\2,\3\):\2;if\(\4===""&&\2!==""\)return;/;
-  const outerMatch = patched.match(outerRe);
-
-  if (!outerMatch) {
-    return { success: false, message: "Patch failed: input handler function not found" };
+  if (newContent.length === fileContent.length) {
+    return { success: false, message: "Patch failed: no match found in cli.js" };
   }
 
-  const [fullMatch, fn, p1, p2, p3, p4] = outerMatch;
+  return { success: true, alreadyPatched: false, content: newContent };
+}
 
-  // The wrapper intercepts input strings containing \x08 (BS) chars.
-  // When detected, it processes each char against the cursor state `h`:
-  //   - \x08: cursor.backspace()
-  //   - other: cursor.insert(char)
-  // Then applies the final state atomically.
-  //
-  // For strings without \x08, passes through to original handler unchanged.
-  //
-  // Variables from the enclosing closure (captured by the original function):
-  //   h = cursor state, q = setText, L = setOffset
-  //   These are referenced via the original function's scope.
-  const wrapper =
-    `${PATCH_MARKER}` +
-    `function ${fn}(${p1},${p2}){` +
-      // Check for embedded BS chars (0x08) — Vietnamese IME signature
-      `if(!${p2}.backspace&&!${p2}.delete&&${p1}.includes("\\b")){` +
-        // Process char-by-char against cursor state h (from enclosing closure)
-        `var _c=h;` +
-        `for(var _i=0;_i<${p1}.length;_i++){` +
-          `var _ch=${p1}[_i];` +
-          `if(_ch==="\\b"){` +
-            `_c=_c.backspace()` +
-          `}else{` +
-            `_c=_c.insert(_ch)` +
-          `}` +
-        `}` +
-        // Apply final state atomically
-        `if(!h.equals(_c)){` +
-          `if(h.text!==_c.text)q(_c.text);` +
-          `L(_c.offset)` +
-        `}` +
-        `return` +
-      `}` +
-      // No embedded BS: pass through to original handler
-      `return _imeR(${p1},${p2})}` +
-    // Original function renamed to _imeR
-    `function _imeR(${p1},${p2}){` +
-      `let ${p3}=${p4}?${p4}(${p1},${p2}):${p1};` +
-      `if(${p3}===""&&${p1}!=="")return;`;
+// --- Patch logic for native binary (Bun-embedded JS) ---
 
-  patched = patched.replace(fullMatch, wrapper);
-
-  if (patched.includes(fullMatch) && !patched.includes("_imeR")) {
-    return { success: false, message: "Patch: replacement failed" };
+function patchContentBinary(binaryContent) {
+  if (binaryContent.includes(PATCH_MARKER)) {
+    return { success: true, alreadyPatched: true };
   }
 
-  return { success: true, alreadyPatched: false, content: patched };
+  const matches = [];
+  const newContent = binaryContent.replace(PATCH_RE, (...args) => {
+    const groups = args[args.length - 1];
+    const offset = args[args.length - 3];
+    const { m0, m1, var0, var2, m2 } = groups;
+
+    // Compact version (strip leading whitespace) to minimize size diff
+    const patched = buildPatch(m0, m1, var0, var2, m2).replace(/^\s+/gm, "");
+    matches.push({ diff: patched.length - args[0].length, index: offset });
+    return patched;
+  });
+
+  if (matches.length === 0) {
+    return { success: false, message: "Patch failed: no match found in binary" };
+  }
+
+  // Bun binary embeds JS sections prefixed with \x00// @bun.
+  // We must compensate for the added bytes by trimming the pragma comment.
+  const pragma = "// @bun ";
+  const pragmaLength = pragma.length;
+  let result = newContent;
+
+  for (let i = 0; i < matches.length; i++) {
+    const matchIdx = matches[i].index;
+    const prevIdx = i === 0 ? 0 : matches[i - 1].index;
+
+    for (let j = matchIdx - 1; j >= prevIdx; j--) {
+      if (result[j] === "\x00") {
+        if (result.slice(j + 1, j + 1 + pragmaLength) === pragma) {
+          // Find the first newline+// after the pragma
+          for (let k = j + 1 + pragmaLength; k < matchIdx; k++) {
+            if (result[k] === "\n" && result[k + 1] === "/" && result[k + 2] === "/") {
+              const diff = matches[i].diff;
+              const sliceStart = k + 3;
+              result = result.slice(0, sliceStart) + result.slice(sliceStart + diff);
+              matches[i].found = true;
+              break;
+            }
+          }
+          if (matches[i].found) break;
+        }
+      }
+    }
+    if (!matches[i].found) break;
+  }
+
+  if (matches.every((m) => !m.found)) {
+    return { success: false, message: "Patch failed: could not adjust binary pragma" };
+  }
+
+  return { success: true, alreadyPatched: false, content: result };
 }
 
 // --- Auto-install SessionStart hook ---
@@ -166,7 +251,6 @@ function installHook(silent) {
     }
   }
 
-  // Add hook to existing SessionStart entry or create new one
   if (!settings.hooks) settings.hooks = {};
   if (!settings.hooks.SessionStart) settings.hooks.SessionStart = [];
 
@@ -178,7 +262,6 @@ function installHook(silent) {
   }
   target.hooks.push({ type: "command", command: HOOK_COMMAND });
 
-  // Ensure .claude dir exists
   const claudeDir = path.join(homeDir, ".claude");
   if (!fs.existsSync(claudeDir)) fs.mkdirSync(claudeDir, { recursive: true });
 
@@ -188,18 +271,18 @@ function installHook(silent) {
 
 // --- Backup & restore ---
 
-function backupPath(cliPath) { return cliPath + ".bak"; }
+function backupPath(targetPath) { return targetPath + ".bak"; }
 
-function createBackup(cliPath) {
-  const bak = backupPath(cliPath);
-  fs.copyFileSync(cliPath, bak);
+function createBackup(targetPath) {
+  const bak = backupPath(targetPath);
+  fs.copyFileSync(targetPath, bak);
   return bak;
 }
 
-function restoreBackup(cliPath) {
-  const bak = backupPath(cliPath);
+function restoreBackup(targetPath) {
+  const bak = backupPath(targetPath);
   if (!fs.existsSync(bak)) return { success: false, message: "No backup found at " + bak };
-  fs.copyFileSync(bak, cliPath);
+  fs.copyFileSync(bak, targetPath);
   return { success: true };
 }
 
@@ -207,20 +290,21 @@ function restoreBackup(cliPath) {
 
 function main() {
   const opts = parseArgs();
-  const cliPath = opts.file || findCliJs();
+  const targetPath = opts.file || findClaudePath();
 
-  if (!cliPath || !fs.existsSync(cliPath)) {
-    console.error("Error: Could not find Claude Code cli.js");
-    if (cliPath) console.error("Tried: " + cliPath);
+  if (!targetPath || !fs.existsSync(targetPath)) {
+    console.error("Error: Could not find Claude Code (cli.js or binary).");
+    if (targetPath) console.error("Tried: " + targetPath);
     process.exit(1);
   }
 
+  console.log("Target: " + targetPath);
+
   if (opts.status) {
-    const content = fs.readFileSync(cliPath, "latin1");
+    const content = fs.readFileSync(targetPath, "latin1");
     const patched = content.includes(PATCH_MARKER);
-    console.log(`Target: ${cliPath}`);
-    console.log(`Status: ${patched ? "PATCHED" : "NOT PATCHED"}`);
-    console.log(`Backup: ${fs.existsSync(backupPath(cliPath)) ? "EXISTS" : "NONE"}`);
+    console.log("Status: " + (patched ? "PATCHED" : "NOT PATCHED"));
+    console.log("Backup: " + (fs.existsSync(backupPath(targetPath)) ? "EXISTS" : "NONE"));
     const homeDir = process.env.USERPROFILE || process.env.HOME || "";
     const sp = path.join(homeDir, ".claude", "settings.json");
     let hookInstalled = false;
@@ -228,24 +312,26 @@ function main() {
       const s = JSON.parse(fs.readFileSync(sp, "utf8"));
       hookInstalled = JSON.stringify(s).includes("claude-code-vietnamese-fix");
     } catch {}
-    console.log(`Hook: ${hookInstalled ? "INSTALLED" : "NOT INSTALLED"}`);
+    console.log("Hook: " + (hookInstalled ? "INSTALLED" : "NOT INSTALLED"));
     process.exit(0);
   }
 
   if (opts.restore) {
-    const result = restoreBackup(cliPath);
+    const result = restoreBackup(targetPath);
     if (!result.success) { console.error(result.message); process.exit(1); }
-    console.log("Restored cli.js from backup");
+    console.log("Restored from backup: " + targetPath);
     process.exit(0);
   }
 
-  // Restore from backup first if exists (ensure clean base for patching)
-  if (fs.existsSync(backupPath(cliPath))) {
-    fs.copyFileSync(backupPath(cliPath), cliPath);
+  // Restore from backup first if exists (ensure clean base for re-patching)
+  // Skip restore for --dry-run and --output to avoid touching the live file
+  if (!opts.dryRun && !opts.output && fs.existsSync(backupPath(targetPath))) {
+    fs.copyFileSync(backupPath(targetPath), targetPath);
   }
 
-  const content = fs.readFileSync(cliPath, "latin1");
-  const result = patchContent(content);
+  const content = fs.readFileSync(targetPath, "latin1");
+  const isJs = targetPath.endsWith(".js");
+  const result = isJs ? patchContentJs(content) : patchContentBinary(content);
 
   if (result.alreadyPatched) {
     if (!opts.silent) console.log("Already patched — skipping");
@@ -257,15 +343,42 @@ function main() {
     process.exit(1);
   }
 
-  // Backup original before writing patch
-  createBackup(cliPath);
-  if (!opts.silent) console.log("Backup: " + backupPath(cliPath));
+  if (opts.dryRun) {
+    console.log("Dry run: patch applied successfully (not saved).");
+    process.exit(0);
+  }
 
-  fs.writeFileSync(cliPath, result.content, "latin1");
-  console.log("Patched: " + cliPath);
+  const finalPath = opts.output || targetPath;
 
-  // Auto-install SessionStart hook for auto-patching after updates
-  installHook(opts.silent);
+  // Backup original before writing (skip if writing to a different output path)
+  if (!opts.output) {
+    createBackup(targetPath);
+    if (!opts.silent) console.log("Backup: " + backupPath(targetPath));
+  }
+
+  fs.writeFileSync(finalPath, result.content, "latin1");
+  console.log("Patched: " + finalPath);
+
+  // Re-sign binary on macOS (required to pass Gatekeeper)
+  if (os.platform() === "darwin" && !isJs) {
+    try {
+      execSync(`codesign --sign - --force --preserve-metadata=entitlements,requirements,flags "${finalPath}"`, { stdio: "inherit" });
+      console.log("Re-signed binary successfully.");
+    } catch (e) {
+      console.error("Warning: Re-sign failed:", e.message);
+      console.error(`Run manually: codesign --sign - --force --preserve-metadata=entitlements,requirements,flags "${finalPath}"`);
+    }
+  }
+
+  // Auto-install SessionStart hook (only for npm cli.js, not binary)
+  if (isJs && !opts.output) {
+    installHook(opts.silent);
+  }
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+// Export for testing
+module.exports = { PATCH_MARKER, patchContentJs, patchContentBinary };
