@@ -1,9 +1,10 @@
 # claude-code-vietnamese-fix
 
-> Fix Vietnamese input (Telex/VNI) for Claude Code CLI on Windows — one command, zero config.
+> Fix Vietnamese input (Telex/VNI) for Claude Code CLI — supports npm and native binary (WinGet/direct download).
 
+[![npm version](https://img.shields.io/npm/v/claude-code-vietnamese-fix)](https://www.npmjs.com/package/claude-code-vietnamese-fix)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows-blue)]()
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)]()
 [![Claude Code](https://img.shields.io/badge/Claude_Code-v2.x-blueviolet)]()
 
 ## The Problem
@@ -12,55 +13,54 @@ Vietnamese users **cannot type** in Claude Code CLI. Characters get duplicated o
 
 **Expected:** `tôi` → **Actual:** `toôooi`
 
-Unikey sends backspace (`\x08`) + replacement chars embedded in the input string. Claude Code's input handler doesn't process these embedded BS chars — it inserts the entire string as-is.
+Vietnamese IME (Unikey, OpenKey, EVKey) embeds `\x7f` (DEL) chars in input strings. Claude Code's input handler inserts the entire string as-is, causing duplicate/garbled output.
 
 ## Quick Start
-
-### Option 1: npx (no install needed)
 
 ```bash
 npx claude-code-vietnamese-fix
 ```
 
-### Option 2: Install globally
+Then **restart Claude Code**.
+
+### Other install options
 
 ```bash
+# Install globally
 npm install -g claude-code-vietnamese-fix
 claude-code-vietnamese-fix
-```
 
-### Option 3: Clone and run
-
-```bash
+# Clone and run
 git clone https://github.com/tvtdev94/claude-code-vietnamese-fix.git
 cd claude-code-vietnamese-fix
 node patch-vietnamese-ime.js
 ```
 
-Then **restart Claude Code**.
-
 ## How it works
 
-The patch wraps Claude Code's `onInput` handler. When embedded BS chars (`\x08`) are detected, it processes each character sequentially against the cursor state:
-- `\x08` (BS) → `cursor.backspace()` — deletes the previous char
-- Any other char → `cursor.insert(char)` — inserts normally
+The patch intercepts the existing `\x7f` detection point in Claude Code's input handler. It strips `\x7f` chars, inserts remaining chars one-by-one into the cursor state, then applies the final state atomically.
 
-The final cursor state is applied atomically.
+Works for both:
+- **npm install** — patches `cli.js` directly
+- **Native binary** (WinGet, direct download) — patches the embedded JS inside the Bun binary
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `npx claude-code-vietnamese-fix` | Patch cli.js (auto-finds, auto-backups) |
-| `npx claude-code-vietnamese-fix --status` | Check current patch status |
-| `npx claude-code-vietnamese-fix --restore` | Restore original cli.js from backup |
-| `npx claude-code-vietnamese-fix --silent` | Patch without output if already patched |
+| `npx claude-code-vietnamese-fix` | Auto-detect and patch (creates backup) |
+| `npx claude-code-vietnamese-fix --status` | Show patch/backup/hook status |
+| `npx claude-code-vietnamese-fix --restore` | Restore original from backup |
+| `npx claude-code-vietnamese-fix --silent` | Patch silently (no output if already patched) |
+| `npx claude-code-vietnamese-fix --dry-run` | Test patch without saving |
+| `npx claude-code-vietnamese-fix -f <path>` | Specify target file manually |
+| `npx claude-code-vietnamese-fix -o <path>` | Write patched output to a new file |
 
 ## Auto-patch After Updates
 
-Claude Code updates will overwrite the patch. Add a SessionStart hook to auto-patch:
+Claude Code updates overwrite the patch. Add a SessionStart hook to auto-patch on every session:
 
-Add to `~/.claude/settings.json`:
+`~/.claude/settings.json`:
 
 ```json
 {
@@ -84,37 +84,25 @@ The script is **idempotent** — safe to run on every session start.
 
 ## Restore
 
-If anything goes wrong:
-
 ```bash
 npx claude-code-vietnamese-fix --restore
 ```
-
-Backup location: `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\cli.js.bak`
 
 ## Compatibility
 
 | Item | Status |
 |------|--------|
 | Windows 10/11 | ✅ |
-| Unikey (Telex) | ✅ Tested |
-| Unikey (VNI, VIQR) | ⚠️ Untested (should work) |
-| OpenKey / EVKey | ⚠️ Untested (should work) |
+| macOS | ✅ |
+| Linux | ✅ |
+| Unikey (Telex/VNI/VIQR) | ✅ |
+| OpenKey / EVKey | ✅ |
 | npm global install | ✅ |
 | NVM for Windows | ✅ |
+| Bun global install | ✅ |
+| **Native binary (WinGet)** | ✅ |
+| **Native binary (macOS/Linux)** | ✅ |
 | Claude Code v2.x | ✅ |
-| **Native binary (WinGet)** | ❌ **Not supported** |
-
-> **Note:** The native binary installed via `winget install Anthropic.ClaudeCode` is a compiled `.exe` with no `cli.js` to patch. If you use the native version and need Vietnamese input, switch to the npm install: `winget uninstall Anthropic.ClaudeCode && npm i -g @anthropic-ai/claude-code`.
-
-## Debug
-
-Capture raw input bytes to diagnose IME behavior:
-
-```bash
-node capture-input.js
-# Type Vietnamese text, press Ctrl+C to stop
-```
 
 ## Related
 
